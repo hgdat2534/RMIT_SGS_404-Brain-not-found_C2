@@ -1,10 +1,41 @@
 import { NextRequest, NextResponse } from 'next/server';
+import fs from 'fs';
+import path from 'path';
 
 const TIDECLOAK_INTERNAL_URL = process.env.TIDECLOAK_INTERNAL_URL || 'http://tidecloak:8080';
 const TIDECLOAK_LOCAL_URL = process.env.NEXT_PUBLIC_TIDECLOAK_URL || 'http://localhost:8080';
 const REALM = process.env.TIDECLOAK_REALM || 'blindvault-realm';
 const CLIENT_ID = process.env.TIDECLOAK_CLIENT_ID || 'blindvault-client';
 const CLIENT_SECRET = process.env.TIDECLOAK_CLIENT_SECRET || 'blindvault-secret-2026';
+
+// ---------------------------------------------------------------------------
+// Secondary passphrase config (config/judge-credentials.json)
+// Re-read on every login so edits apply without restarting / rebuilding.
+// ---------------------------------------------------------------------------
+type JudgeCredential = { displayName?: string; passphrase: string; tidecloakPassword?: string };
+
+function loadJudgeCredentials(): Record<string, JudgeCredential> | null {
+  const file =
+    process.env.JUDGE_CREDENTIALS_FILE || path.join(process.cwd(), 'config', 'judge-credentials.json');
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    return raw?.judges || null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Simulated session revocation store (in-memory, survives HMR via globalThis).
+// Used so /logout is provable even when TideCloak runs in fallback mode:
+// after logout, /introspect -> active:false, /refresh & /userinfo -> rejected.
+// ---------------------------------------------------------------------------
+const revoked: Set<string> =
+  ((globalThis as any).__bvRevokedTokens ??= new Set<string>());
+
+function isRevoked(token?: string) {
+  return Boolean(token) && revoked.has(token as string);
+}
 
 // Helper to resolve candidate base URLs (handles Docker internal network + localhost + /auth/realms vs /realms)
 function getCandidateEndpoints(subpath: string): string[] {
@@ -26,7 +57,7 @@ async function callTideCloakOIDC(
 
   for (const url of urls) {
     try {
-      const res = await fetch(url, { ...options, cache: 'no-store' });
+      const res = await fetch(url, { ...options, cache: 'no-store', signal: AbortSignal.timeout(1500) });
       if (res.status === 404) continue; // Try the next path variant (/realms vs /auth/realms)
       if (res.status === 204) {
         return { ok: true, status: 204, data: { status: '204 No Content (Session Invalidated)' }, endpointUsed: url };
@@ -101,13 +132,42 @@ export async function POST(req: NextRequest) {
 
   // 1. OBTAIN ACCESS TOKEN: POST /protocol/openid-connect/token (grant_type=password)
   if (action === 'TOKEN_PASSWORD') {
-    const { username = 'judge3', password = 'password' } = body;
+    const { username = '', password = '' } = body;
+
+    // Step A: verify the judge's secondary passphrase from config/judge-credentials.json
+    const creds = loadJudgeCredentials();
+    if (!creds) {
+      return NextResponse.json(
+        {
+          liveServer: false,
+          endpoint: 'config/judge-credentials.json',
+          error: {
+            error: 'server_misconfigured',
+            error_description: 'config/judge-credentials.json not found or invalid JSON',
+          },
+        },
+        { status: 503 }
+      );
+    }
+    const cred = creds[username];
+    if (!cred || !cred.passphrase || password !== cred.passphrase) {
+      return NextResponse.json(
+        {
+          liveServer: false,
+          endpoint: 'config/judge-credentials.json',
+          error: { error: 'invalid_grant', error_description: 'Invalid username or secondary passphrase' },
+        },
+        { status: 401 }
+      );
+    }
+
+    // Step B: passphrase OK -> exchange for a TideCloak token using the realm password (server-side only)
     const form = new URLSearchParams({
       grant_type: 'password',
       client_id: CLIENT_ID,
       client_secret: CLIENT_SECRET,
       username,
-      password,
+      password: cred.tidecloakPassword || 'password',
     });
 
     try {
@@ -146,18 +206,7 @@ export async function POST(req: NextRequest) {
       // Fallback if container is still starting
     }
 
-    // Fallback if container is warming up
-    if (password !== 'password') {
-      return NextResponse.json(
-        {
-          liveServer: false,
-          endpoint: `http://localhost:8080/auth/realms/${REALM}/protocol/openid-connect/token`,
-          error: { error: 'invalid_grant', error_description: 'Invalid user credentials' },
-        },
-        { status: 401 }
-      );
-    }
-
+    // Fallback if container is warming up (secondary passphrase already verified above)
     const fb = buildFallbackTokenResponse(username);
     return NextResponse.json({
       liveServer: false,
@@ -179,6 +228,12 @@ export async function POST(req: NextRequest) {
   // 2. REFRESH ACCESS TOKEN: POST /protocol/openid-connect/token (grant_type=refresh_token)
   if (action === 'TOKEN_REFRESH') {
     const { refresh_token, username = 'judge3' } = body;
+    if (!refresh_token || isRevoked(refresh_token)) {
+      return NextResponse.json(
+        { liveServer: false, error: { error: 'invalid_grant', error_description: 'Session not active (logged out)' } },
+        { status: 400 }
+      );
+    }
     const form = new URLSearchParams({
       grant_type: 'refresh_token',
       client_id: CLIENT_ID,
@@ -212,6 +267,13 @@ export async function POST(req: NextRequest) {
   // 3. VALIDATE / INTROSPECT TOKEN: POST /protocol/openid-connect/token/introspect
   if (action === 'TOKEN_INTROSPECT') {
     const { token, username = 'judge3' } = body;
+    if (!token || isRevoked(token)) {
+      return NextResponse.json({
+        liveServer: false,
+        endpoint: `http://localhost:8080/auth/realms/${REALM}/protocol/openid-connect/token/introspect`,
+        introspection: { active: false },
+      });
+    }
     const form = new URLSearchParams({
       client_id: CLIENT_ID,
       client_secret: CLIENT_SECRET,
@@ -252,6 +314,12 @@ export async function POST(req: NextRequest) {
   // 4. RETRIEVE USER INFO: GET /protocol/openid-connect/userinfo
   if (action === 'USERINFO') {
     const { access_token, username = 'judge3' } = body;
+    if (!access_token || isRevoked(access_token)) {
+      return NextResponse.json(
+        { liveServer: false, error: { error: 'invalid_token', error_description: 'Token revoked (logged out)' } },
+        { status: 401 }
+      );
+    }
     try {
       const result = await callTideCloakOIDC('/userinfo', {
         method: 'GET',
@@ -284,7 +352,10 @@ export async function POST(req: NextRequest) {
 
   // 5. LOGOUT: POST /protocol/openid-connect/logout
   if (action === 'LOGOUT') {
-    const { refresh_token } = body;
+    const { refresh_token, access_token } = body;
+    // Simulated revocation: always recorded locally, regardless of live/fallback mode
+    if (refresh_token) revoked.add(refresh_token);
+    if (access_token) revoked.add(access_token);
     const form = new URLSearchParams({
       client_id: CLIENT_ID,
       client_secret: CLIENT_SECRET,

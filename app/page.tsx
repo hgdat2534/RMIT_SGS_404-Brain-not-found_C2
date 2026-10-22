@@ -48,9 +48,18 @@ export default function BlindVaultApp() {
   const [showLoginModal, setShowLoginModal] = useState<boolean>(false);
   const [showTokenInspector, setShowTokenInspector] = useState<boolean>(false);
   const [loginUsername, setLoginUsername] = useState<string>('judge3');
-  const [loginPassword, setLoginPassword] = useState<string>('password');
+  const [loginPassword, setLoginPassword] = useState<string>('');
   const [authLoading, setAuthLoading] = useState<boolean>(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [logoutReceipt, setLogoutReceipt] = useState<{
+    username: string;
+    sessionState: string;
+    liveServer: boolean;
+    logoutStatus: string;
+    introspectAfter: any;
+    refreshAfter: string;
+    time: string;
+  } | null>(null);
 
   const isTideConnected = Boolean(tide?.authenticated) || Boolean(oidcSession?.access_token);
 
@@ -151,6 +160,7 @@ export default function BlindVaultApp() {
       };
       setOidcSession(sessionObj);
       setShowLoginModal(false);
+      setLoginPassword('');
 
       // Automatically sync active judge dropdown with logged-in judge account
       if (loginUsername === 'judge1') setActiveJudgeId('judge-1');
@@ -247,28 +257,72 @@ export default function BlindVaultApp() {
     }
   };
 
-  // 5. Logout (POST /protocol/openid-connect/logout)
+  // 5. Logout (POST /protocol/openid-connect/logout) + simulated revocation proof
+  // Local session is cleared FIRST so the UI always signs out, even if TideCloak is slow/unreachable.
   const handleOidcLogout = async () => {
-    if (oidcSession) {
-      await fetch('/api/tidecloak-auth', {
+    const old = oidcSession;
+    setOidcSession(null);
+    setShowTokenInspector(false);
+    setLoginPassword('');
+    try {
+      if (tide?.authenticated) tide?.logout?.();
+    } catch (err) {
+      console.warn('tide.logout failed (ignored):', err);
+    }
+    if (!old) return;
+
+    const post = async (body: any) => {
+      const r = await fetch('/api/tidecloak-auth', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'LOGOUT',
-          refresh_token: oidcSession.refresh_token,
-        }),
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(8000),
       });
-      addLog(
-        'TideCloak /logout API',
-        'INFO',
-        `POST /protocol/openid-connect/logout -> 204 No Content (Session ${oidcSession.session_state} invalidated).`
-      );
-      setOidcSession(null);
-      setShowTokenInspector(false);
+      let d: any = {};
+      try {
+        d = await r.json();
+      } catch {}
+      return { r, d };
+    };
+
+    let logoutStatus = '204 No Content';
+    let introspectAfter: any = { active: false };
+    let refreshAfter = 'n/a';
+    try {
+      const { d: loData } = await post({
+        action: 'LOGOUT',
+        refresh_token: old.refresh_token,
+        access_token: old.access_token,
+      });
+      logoutStatus = loData?.message || logoutStatus;
+      const { d: intro } = await post({ action: 'TOKEN_INTROSPECT', token: old.access_token, username: old.username });
+      introspectAfter = intro?.introspection ?? { active: false };
+      const { r: rf, d: rfData } = await post({
+        action: 'TOKEN_REFRESH',
+        refresh_token: old.refresh_token,
+        username: old.username,
+      });
+      refreshAfter = rf.ok
+        ? 'refresh accepted (unexpected)'
+        : `${rf.status} ${rfData?.error?.error || 'rejected'}: ${rfData?.error?.error_description || ''}`;
+    } catch (err: any) {
+      logoutStatus = `local logout only (${err?.message || 'network error'})`;
     }
-    if (tide?.authenticated) {
-      tide?.logout?.();
-    }
+
+    addLog(
+      'TideCloak /logout API',
+      'INFO',
+      `${old.username} signed out -> ${logoutStatus} (session ${old.session_state} revoked). Post-logout introspect: active=${introspectAfter?.active}.`
+    );
+    setLogoutReceipt({
+      username: old.username,
+      sessionState: old.session_state,
+      liveServer: old.liveServer,
+      logoutStatus,
+      introspectAfter,
+      refreshAfter,
+      time: new Date().toLocaleTimeString(),
+    });
   };
 
   // Action 1: Candidate Submits Blind Work (Client-Side TideCloak Encryption)
@@ -310,23 +364,76 @@ export default function BlindVaultApp() {
     }
   };
 
+  // Simulated TideCloak "secure fetch": every protected call carries the Bearer token.
+  // Server re-checks token, roles and ownership (lib/tideSim.ts). Auto-refreshes once on expiry.
+  const secureSubmissionsPost = async (body: any, asAnonymous = false) => {
+    const send = (token?: string) =>
+      fetch('/api/submissions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+    const token = asAnonymous ? undefined : oidcSession?.access_token || (tide as any)?.token;
+    let res = await send(token);
+    let data = await res.json();
+    if (!asAnonymous && res.status === 401 && data?.decision?.code === 'TOKEN_EXPIRED' && oidcSession) {
+      const rf = await fetch('/api/tidecloak-auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'TOKEN_REFRESH',
+          refresh_token: oidcSession.refresh_token,
+          username: oidcSession.username,
+        }),
+      });
+      const rfData = await rf.json();
+      if (rf.ok && rfData.tokenData?.access_token) {
+        setOidcSession((prev) =>
+          prev
+            ? {
+                ...prev,
+                access_token: rfData.tokenData.access_token,
+                refresh_token: rfData.tokenData.refresh_token,
+                expires_in: rfData.tokenData.expires_in,
+              }
+            : null
+        );
+        addLog('TideCloak /token API', 'INFO', 'Access token expired -> refreshed automatically and retried.');
+        res = await send(rfData.tokenData.access_token);
+        data = await res.json();
+      }
+    }
+    return { res, data };
+  };
+
   // Action 2: Judge Locks Score
   const handleLockScore = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedSub) return;
 
-    const res = await fetch('/api/submissions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'LOCK_JUDGE_SCORE',
-        submissionId: selectedSub.id,
-        judgeId: activeJudgeId,
-        score: Number(scoreInput),
-        feedback: feedbackInput,
-      }),
+    const { res, data } = await secureSubmissionsPost({
+      action: 'LOCK_JUDGE_SCORE',
+      submissionId: selectedSub.id,
+      judgeId: activeJudgeId,
+      score: Number(scoreInput),
+      feedback: feedbackInput,
     });
-    const data = await res.json();
+    if (!res.ok) {
+      addLog(
+        'TideCloak Access Check (server)',
+        'BLOCKED',
+        `LOCK_JUDGE_SCORE denied [${res.status} ${data?.decision?.code}]: ${data?.decision?.reason || data?.error}`
+      );
+      return;
+    }
+    addLog(
+      'TideCloak Access Check (server)',
+      'ALLOWED',
+      `LOCK_JUDGE_SCORE allowed for ${data?.decision?.subject ?? 'judge'} (role committee_judge, owns ${activeJudgeId}).`
+    );
     setSubmissions(data.submissions);
 
     const updatedSub = data.submissions.find((s: SubmissionRecord) => s.id === selectedSub.id);
@@ -343,6 +450,16 @@ export default function BlindVaultApp() {
   // Action 3: Rogue Admin / Compromised Server Unilateral Unmask Attempt
   const handleRogueAdminAttempt = async () => {
     if (!selectedSub) return;
+    // The rogue admin holds DB/root access but no TideCloak judge identity: ask the server anyway.
+    const { data: adminCheck } = await secureSubmissionsPost(
+      { action: 'ADMIN_RAW_DUMP', submissionId: selectedSub.id },
+      true
+    );
+    addLog(
+      'TideCloak Access Check (server)',
+      'BLOCKED',
+      `ADMIN_RAW_DUMP -> ${adminCheck?.decision?.code}: ${adminCheck?.decision?.reason}. Server returned ciphertext only.`
+    );
     const result = await unmaskCandidateIdentity(
       selectedSub,
       tide?.doDecrypt,
@@ -363,6 +480,7 @@ export default function BlindVaultApp() {
             quorumState: `${lockedCount}/${totalJudges} Judges Locked`,
             serverStoredIdentity: selectedSub.encryptedIdentity,
             tideCloakVerdict: 'ACCESS_DENIED_NO_MASTER_KEY',
+            serverAccessCheck: adminCheck?.decision,
             reason: result.error,
           },
           null,
@@ -381,6 +499,25 @@ export default function BlindVaultApp() {
   // Action 4: Emergent Authority Decryption (Once 3/3 Quorum Met)
   const handleEmergentUnmask = async () => {
     if (!selectedSub) return;
+    // 1) Server-side TideCloak policy: token + committee_judge + _tide_message.selfdecrypt + 3/3 quorum
+    const { res: gateRes, data: gate } = await secureSubmissionsPost({
+      action: 'UNMASK_IDENTITY',
+      submissionId: selectedSub.id,
+    });
+    if (!gateRes.ok) {
+      addLog(
+        'TideCloak Access Check (server)',
+        'BLOCKED',
+        `UNMASK_IDENTITY denied [${gateRes.status} ${gate?.decision?.code}]: ${gate?.decision?.reason}`
+      );
+      return;
+    }
+    addLog(
+      'TideCloak Access Check (server)',
+      'ALLOWED',
+      `UNMASK_IDENTITY granted to ${gate?.decision?.subject} (quorum ${gate?.quorum}). Decrypting in browser...`
+    );
+    // 2) Decrypt in the judge's browser (doDecrypt / labelled fallback)
     const result = await unmaskCandidateIdentity(
       selectedSub,
       tide?.doDecrypt,
@@ -418,7 +555,7 @@ export default function BlindVaultApp() {
     addLog(
       'Demo Controller',
       'INFO',
-      'Reset Submission #BV-8041 back to 2/3 Judge Quorum (Sealed State) for live demo recording.'
+      'Reset Submission #BV-8041 back to 1/3 Judge Quorum (Sealed State) — judge2 and judge3 must each sign in and lock.'
     );
   };
 
@@ -507,7 +644,7 @@ export default function BlindVaultApp() {
 
             <button
               onClick={handleResetDemo}
-              title="Reset BV-8041 to 2/3 Quorum for Video Demo"
+              title="Reset BV-8041 to 1/3 Quorum for Video Demo"
               className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border border-slate-700 transition"
             >
               <RefreshCw className="h-4 w-4" />
@@ -1036,7 +1173,7 @@ export default function BlindVaultApp() {
 
             <form onSubmit={handlePasswordGrantLogin} className="space-y-3.5 text-xs">
               <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 space-y-1 text-[11px] text-slate-300">
-                <p className="font-semibold text-indigo-300">Pre-configured TideCloak Accounts:</p>
+                <p className="font-semibold text-indigo-300">Judge accounts (passphrase set by admin in config file):</p>
                 <div className="flex gap-2 pt-1">
                   {[
                     { u: 'judge3', label: 'judge3 (Dr. Linh Nguyen)' },
@@ -1048,7 +1185,7 @@ export default function BlindVaultApp() {
                       key={acc.u}
                       onClick={() => {
                         setLoginUsername(acc.u);
-                        setLoginPassword('password');
+                        setLoginPassword('');
                       }}
                       className={`px-2 py-1 rounded border text-[10px] font-mono transition ${
                         loginUsername === acc.u
@@ -1078,11 +1215,16 @@ export default function BlindVaultApp() {
 
               <div>
                 <label className="block text-slate-300 mb-1 font-medium">
-                  Password (default: <code>password</code>)
+                  Secondary passphrase{' '}
+                  <span className="text-slate-500 font-normal">
+                    (set in <code>config/judge-credentials.json</code>)
+                  </span>
                 </label>
                 <input
                   type="password"
                   required
+                  autoComplete="off"
+                  placeholder="Enter your judge passphrase"
                   value={loginPassword}
                   onChange={(e) => setLoginPassword(e.target.value)}
                   className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-white font-mono"
@@ -1092,7 +1234,7 @@ export default function BlindVaultApp() {
               <div className="p-2.5 rounded bg-slate-950 border border-slate-800 font-mono text-[10px] text-slate-400 space-y-0.5">
                 <div>grant_type=password</div>
                 <div>client_id=blindvault-client</div>
-                <div>client_secret=blindvault-secret-2026</div>
+                <div>passphrase → verified server-side, then exchanged for TideCloak token</div>
               </div>
 
               {authError && (
@@ -1119,6 +1261,67 @@ export default function BlindVaultApp() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal 1b: Simulated Logout Receipt (proves the old session is revoked) */}
+      {logoutReceipt && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-rose-500/40 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center gap-2 border-b border-slate-800 pb-3">
+              <LogOut className="h-5 w-5 text-rose-400" />
+              <div>
+                <h3 className="text-base font-bold text-white">Signed out — session revoked</h3>
+                <p className="text-[11px] text-slate-400 font-mono">
+                  {logoutReceipt.username} · {logoutReceipt.time} ·{' '}
+                  {logoutReceipt.liveServer ? 'live TideCloak' : 'simulated (fallback mode)'}
+                </p>
+              </div>
+            </div>
+            <ol className="space-y-2 text-[11px] font-mono text-slate-300">
+              <li className="flex gap-2">
+                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                <span>POST /logout → {logoutReceipt.logoutStatus}</span>
+              </li>
+              <li className="flex gap-2">
+                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                <span>session_state {logoutReceipt.sessionState} marked revoked</span>
+              </li>
+              <li className="flex gap-2">
+                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                <span>
+                  POST /introspect (old token) → active=
+                  {String(logoutReceipt.introspectAfter?.active ?? false)}
+                </span>
+              </li>
+              <li className="flex gap-2">
+                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                <span>POST /token refresh (old refresh_token) → {logoutReceipt.refreshAfter}</span>
+              </li>
+              <li className="flex gap-2">
+                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                <span>access_token / refresh_token wiped from browser memory</span>
+              </li>
+            </ol>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                onClick={() => setLogoutReceipt(null)}
+                className="px-4 py-2 rounded-lg bg-slate-800 text-slate-300 text-xs"
+              >
+                Close
+              </button>
+              <button
+                onClick={() => {
+                  setLogoutReceipt(null);
+                  setShowLoginModal(true);
+                }}
+                className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-1.5"
+              >
+                <KeyRound className="h-3.5 w-3.5" />
+                Sign in as another judge
+              </button>
+            </div>
           </div>
         </div>
       )}

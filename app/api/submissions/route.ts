@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { checkAccess } from '@/lib/tideSim';
 import { SubmissionRecord } from '@/lib/tideBridge';
 
 // Helper to create sealed initial demo records (server NEVER sees plaintext identities)
@@ -43,11 +44,11 @@ let SUBMISSIONS_DB: SubmissionRecord[] = [
         judgeId: 'judge-2',
         judgeName: 'Prof. Marcus Thorne',
         role: 'External Evaluator',
-        score: 94,
-        feedback: 'Rigorous formal verification of pointer bounds. Clear benchmark methodology.',
-        locked: true,
-        signatureHash: '0x4d1e...c08b',
-        lockedAt: '2026-10-22T03:22:00Z',
+        score: null,
+        feedback: '',
+        locked: false,
+        signatureHash: null,
+        lockedAt: null,
       },
       {
         judgeId: 'judge-3',
@@ -178,6 +179,11 @@ export async function POST(req: NextRequest) {
 
   if (body.action === 'LOCK_JUDGE_SCORE') {
     const { submissionId, judgeId, score, feedback } = body;
+    // Simulated TideCloak server-side check: valid token + committee_judge + owns this slot
+    const decision = checkAccess('LOCK_JUDGE_SCORE', req.headers.get('authorization'), { judgeSlot: judgeId });
+    if (!decision.allowed) {
+      return NextResponse.json({ error: decision.reason, decision, submissions: SUBMISSIONS_DB }, { status: decision.status });
+    }
     SUBMISSIONS_DB = SUBMISSIONS_DB.map((sub) => {
       if (sub.id !== submissionId) return sub;
       const updatedJudges = sub.judges.map((j) => {
@@ -201,8 +207,39 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ submissions: SUBMISSIONS_DB });
   }
 
+  if (body.action === 'UNMASK_IDENTITY' || body.action === 'ADMIN_RAW_DUMP') {
+    const sub = SUBMISSIONS_DB.find((s) => s.id === body.submissionId);
+    if (!sub) return NextResponse.json({ error: 'Submission not found' }, { status: 404 });
+    const lockedCount = sub.judges.filter((j) => j.locked).length;
+    const decision = checkAccess(body.action, req.headers.get('authorization'), {
+      lockedCount,
+      totalJudges: sub.judges.length,
+    });
+    // The server never returns plaintext identity: it only grants/denies decrypt authority.
+    // Decryption itself happens in the judge's browser (doDecrypt).
+    return NextResponse.json(
+      {
+        decision,
+        anonymousCode: sub.anonymousCode,
+        quorum: `${lockedCount}/${sub.judges.length}`,
+        serverStoredIdentity: sub.encryptedIdentity,
+      },
+      { status: decision.allowed ? 200 : decision.status }
+    );
+  }
+
   if (body.action === 'RESET_DEMO') {
-    // Reset Judge 3 on sub-1 so the user can re-record the demo video anytime with 1 click!
+    // Reset Judges 2 & 3 on sub-1 (back to 1/3) so the demo can be re-recorded in 1 click
+    SUBMISSIONS_DB[0].judges[1] = {
+      judgeId: 'judge-2',
+      judgeName: 'Prof. Marcus Thorne',
+      role: 'External Evaluator',
+      score: null,
+      feedback: '',
+      locked: false,
+      signatureHash: null,
+      lockedAt: null,
+    };
     SUBMISSIONS_DB[0].judges[2] = {
       judgeId: 'judge-3',
       judgeName: 'Dr. Linh Nguyen',

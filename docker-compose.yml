@@ -29,6 +29,9 @@ services:
       - TIDECLOAK_REALM=blindvault-realm
       - TIDECLOAK_CLIENT_ID=blindvault-client
       - TIDECLOAK_CLIENT_SECRET=blindvault-secret-2026
+    volumes:
+      # Judge secondary passphrases - edit on host, picked up on next login (no rebuild)
+      - ./config/judge-credentials.json:/app/config/judge-credentials.json:ro
     depends_on:
       - tidecloak
     restart: unless-stopped

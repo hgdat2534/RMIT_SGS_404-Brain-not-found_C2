@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+
+# Next.js build output
+.next/
+out/
+
+# Build info
+*.tsbuildinfo
+next-env.d.ts
+
+# Environment files (secrets — injected at runtime, never baked in)
+.env
+.env.local
+.env.*.local
+
+# Generated / per-machine data
+data/tidecloak.json
+data/invite-links.txt
+data/errand-store.json
+data/keycloakdb*
+
+# Branding (generated)
+branding/
+
+# Git
+.git/
+.gitattributes
+.gitignore
+
+# Docker files (don't send to build context recursively)
+Dockerfile
+docker-compose.yml
+docker-compose*.yml
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Gemini / AI
+.gemini/
+.mcp.json
+
