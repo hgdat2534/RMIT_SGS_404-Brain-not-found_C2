@@ -10,6 +10,7 @@ services:
       - KC_BOOTSTRAP_ADMIN_PASSWORD=password
       - KC_HTTP_ENABLED=true
       - KC_HOSTNAME_STRICT=false
+      - KC_HTTP_RELATIVE_PATH=/auth
     command: ["start-dev", "--import-realm"]
     volumes:
       - ./tidecloak-init/blindvault-realm.json:/opt/keycloak/data/import/blindvault-realm.json:ro
@@ -23,7 +24,11 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_TIDECLOAK_URL=http://localhost:8080
+      - NEXT_PUBLIC_TIDECLOAK_URL=http://localhost:8080/auth
+      - TIDECLOAK_INTERNAL_URL=http://tidecloak:8080
+      - TIDECLOAK_REALM=blindvault-realm
+      - TIDECLOAK_CLIENT_ID=blindvault-client
+      - TIDECLOAK_CLIENT_SECRET=blindvault-secret-2026
     depends_on:
       - tidecloak
     restart: unless-stopped

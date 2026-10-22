@@ -33,11 +33,14 @@
   "clients": [
     {
       "clientId": "blindvault-client",
-      "name": "BlindVault Next.js App",
+      "name": "BlindVault Next.js Confidential & Public Client",
       "enabled": true,
-      "publicClient": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "blindvault-secret-2026",
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
       "redirectUris": [
         "http://localhost:3000/*",
         "http://localhost:3000/auth/redirect"
@@ -45,21 +48,57 @@
       "webOrigins": [
         "http://localhost:3000",
         "*"
-      ],
-      "attributes": {
-        "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "+"
-      }
+      ]
     }
   ],
   "users": [
     {
-      "username": "judge",
+      "username": "judge1",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Evelyn",
+      "lastName": "Vance",
+      "email": "evelyn.vance@blindvault.org",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "password",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "_tide_message.selfencrypt",
+        "_tide_message.selfdecrypt",
+        "committee_judge"
+      ]
+    },
+    {
+      "username": "judge2",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Marcus",
+      "lastName": "Thorne",
+      "email": "marcus.thorne@blindvault.org",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "password",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "_tide_message.selfencrypt",
+        "_tide_message.selfdecrypt",
+        "committee_judge"
+      ]
+    },
+    {
+      "username": "judge3",
       "enabled": true,
       "emailVerified": true,
       "firstName": "Linh",
-      "lastName": "Nguyen (Quorum Judge)",
-      "email": "judge@blindvault.org",
+      "lastName": "Nguyen",
+      "email": "linh.nguyen@blindvault.org",
       "credentials": [
         {
           "type": "password",

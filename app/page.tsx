@@ -17,6 +17,9 @@ import {
   EyeOff,
   Sparkles,
   ServerCrash,
+  Activity,
+  LogOut,
+  User,
 } from 'lucide-react';
 import {
   SubmissionRecord,
@@ -24,11 +27,32 @@ import {
   unmaskCandidateIdentity,
 } from '@/lib/tideBridge';
 
+interface OidcSession {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+  session_state: string;
+  scope: string;
+  username: string;
+  endpoint: string;
+  liveServer: boolean;
+  userInfo?: any;
+  introspection?: any;
+}
+
 export default function BlindVaultApp() {
-  // Official TideCloak Next.js SDK Hook
   const tide = useTideCloak();
-  const [manualEnclaveSession, setManualEnclaveSession] = useState<boolean>(false);
-  const isTideConnected = Boolean(tide?.authenticated) || manualEnclaveSession;
+
+  // TideCloak REST Authentication API State (/token, /userinfo, /token/introspect, /logout)
+  const [oidcSession, setOidcSession] = useState<OidcSession | null>(null);
+  const [showLoginModal, setShowLoginModal] = useState<boolean>(false);
+  const [showTokenInspector, setShowTokenInspector] = useState<boolean>(false);
+  const [loginUsername, setLoginUsername] = useState<string>('judge3');
+  const [loginPassword, setLoginPassword] = useState<string>('password');
+  const [authLoading, setAuthLoading] = useState<boolean>(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  const isTideConnected = Boolean(tide?.authenticated) || Boolean(oidcSession?.access_token);
 
   const [submissions, setSubmissions] = useState<SubmissionRecord[]>([]);
   const [selectedSubId, setSelectedSubId] = useState<string>('sub-1');
@@ -58,7 +82,7 @@ export default function BlindVaultApp() {
       actor: 'TideCloak Fabric',
       status: 'INFO',
       message:
-        'Initialized BlindVault Quorum Policy: Candidate identity decryption requires 3-of-3 cryptographically locked judge scores + _tide_message.selfdecrypt authority.',
+        'Initialized BlindVault Quorum Policy: Candidate identity decryption requires 3-of-3 cryptographically locked judge scores + TideCloak OIDC token authority.',
     },
   ]);
 
@@ -85,6 +109,167 @@ export default function BlindVaultApp() {
   const lockedCount = selectedSub ? selectedSub.judges.filter((j) => j.locked).length : 0;
   const totalJudges = selectedSub ? selectedSub.judges.length : 3;
   const quorumReached = lockedCount === totalJudges;
+
+  // --- TideCloak REST Authentication API Handlers ---
+  // 1. Obtain Access Token (POST /auth/realms/blindvault-realm/protocol/openid-connect/token)
+  const handlePasswordGrantLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthLoading(true);
+    setAuthError(null);
+
+    try {
+      const res = await fetch('/api/tidecloak-auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'TOKEN_PASSWORD',
+          username: loginUsername,
+          password: loginPassword,
+        }),
+      });
+      const data = await res.json();
+
+      if (!res.ok || data.error) {
+        const errDesc =
+          data.error?.error_description || data.error?.error || 'Invalid user credentials';
+        setAuthError(`${res.status} Unauthorized: ${errDesc}`);
+        addLog('TideCloak /token API', 'BLOCKED', `POST /token failed: ${errDesc}`);
+        setAuthLoading(false);
+        return;
+      }
+
+      const sessionObj: OidcSession = {
+        access_token: data.tokenData.access_token,
+        refresh_token: data.tokenData.refresh_token,
+        expires_in: data.tokenData.expires_in,
+        session_state: data.tokenData.session_state,
+        scope: data.tokenData.scope,
+        username: loginUsername,
+        endpoint: data.endpoint,
+        liveServer: data.liveServer,
+        userInfo: data.userInfo,
+      };
+      setOidcSession(sessionObj);
+      setShowLoginModal(false);
+
+      // Automatically sync active judge dropdown with logged-in judge account
+      if (loginUsername === 'judge1') setActiveJudgeId('judge-1');
+      if (loginUsername === 'judge2') setActiveJudgeId('judge-2');
+      if (loginUsername === 'judge3') setActiveJudgeId('judge-3');
+
+      addLog(
+        'TideCloak /token API',
+        'ALLOWED',
+        `POST ${data.endpoint} (grant_type=password, client_id=blindvault-client) -> Issued Bearer access_token & refresh_token for ${loginUsername}.`
+      );
+    } catch (err: any) {
+      setAuthError(err?.message || 'Network error calling /api/tidecloak-auth');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  // 2. Refresh Access Token (grant_type=refresh_token)
+  const handleRefreshToken = async () => {
+    if (!oidcSession) return;
+    const res = await fetch('/api/tidecloak-auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'TOKEN_REFRESH',
+        refresh_token: oidcSession.refresh_token,
+        username: oidcSession.username,
+      }),
+    });
+    const data = await res.json();
+    if (data.tokenData) {
+      setOidcSession((prev) =>
+        prev
+          ? {
+              ...prev,
+              access_token: data.tokenData.access_token,
+              refresh_token: data.tokenData.refresh_token,
+              expires_in: data.tokenData.expires_in,
+            }
+          : null
+      );
+      addLog(
+        'TideCloak /token API',
+        'INFO',
+        `POST /protocol/openid-connect/token (grant_type=refresh_token) -> Rotated access_token & refresh_token.`
+      );
+    }
+  };
+
+  // 3. Validate Token (POST /protocol/openid-connect/token/introspect)
+  const handleIntrospectToken = async () => {
+    if (!oidcSession) return;
+    const res = await fetch('/api/tidecloak-auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'TOKEN_INTROSPECT',
+        token: oidcSession.access_token,
+        username: oidcSession.username,
+      }),
+    });
+    const data = await res.json();
+    if (data.introspection) {
+      setOidcSession((prev) => (prev ? { ...prev, introspection: data.introspection } : null));
+      addLog(
+        'TideCloak /token/introspect',
+        'ALLOWED',
+        `POST /protocol/openid-connect/token/introspect -> active=${data.introspection.active}, sub=${data.introspection.sub}, username=${data.introspection.username}`
+      );
+    }
+  };
+
+  // 4. Retrieve User Info (GET /protocol/openid-connect/userinfo)
+  const handleFetchUserInfo = async () => {
+    if (!oidcSession) return;
+    const res = await fetch('/api/tidecloak-auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'USERINFO',
+        access_token: oidcSession.access_token,
+        username: oidcSession.username,
+      }),
+    });
+    const data = await res.json();
+    if (data.userInfo) {
+      setOidcSession((prev) => (prev ? { ...prev, userInfo: data.userInfo } : null));
+      addLog(
+        'TideCloak /userinfo',
+        'INFO',
+        `GET /protocol/openid-connect/userinfo -> Verified ${data.userInfo.name} (${data.userInfo.email})`
+      );
+    }
+  };
+
+  // 5. Logout (POST /protocol/openid-connect/logout)
+  const handleOidcLogout = async () => {
+    if (oidcSession) {
+      await fetch('/api/tidecloak-auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'LOGOUT',
+          refresh_token: oidcSession.refresh_token,
+        }),
+      });
+      addLog(
+        'TideCloak /logout API',
+        'INFO',
+        `POST /protocol/openid-connect/logout -> 204 No Content (Session ${oidcSession.session_state} invalidated).`
+      );
+      setOidcSession(null);
+      setShowTokenInspector(false);
+    }
+    if (tide?.authenticated) {
+      tide?.logout?.();
+    }
+  };
 
   // Action 1: Candidate Submits Blind Work (Client-Side TideCloak Encryption)
   const handleCreateSubmission = async (e: React.FormEvent) => {
@@ -268,8 +453,8 @@ export default function BlindVaultApp() {
             </div>
           </div>
 
-          {/* TideCloak Connection & Actions */}
-          <div className="flex items-center gap-3">
+          {/* TideCloak Authentication API Controls */}
+          <div className="flex items-center gap-2.5">
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs">
               <span
                 className={`h-2 w-2 rounded-full ${
@@ -277,49 +462,39 @@ export default function BlindVaultApp() {
                 }`}
               />
               <span className="text-slate-300 font-medium">
-                {isTideConnected
+                {oidcSession
+                  ? `OIDC Bearer: ${oidcSession.username}`
+                  : isTideConnected
                   ? 'TideCloak Enclave Authenticated'
-                  : 'TideCloak Hybrid Sandbox Ready'}
+                  : 'Unauthenticated (Click Login)'}
               </span>
             </div>
 
             {isTideConnected ? (
-              <button
-                onClick={() => {
-                  setManualEnclaveSession(false);
-                  if (tide?.authenticated) tide?.logout?.();
-                  addLog('TideCloak Auth', 'INFO', 'Ended TideCloak DPoP Enclave session.');
-                }}
-                className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
-              >
-                Logout TideCloak (judge@blindvault.org)
-              </button>
-            ) : (
-              <div className="flex items-center gap-2">
+              <>
                 <button
-                  onClick={() => {
-                    setManualEnclaveSession(true);
-                    addLog(
-                      'TideCloak Enclave Auth',
-                      'ALLOWED',
-                      'Authenticated via TideCloak (judge@blindvault.org) with roles [_tide_message.selfencrypt, _tide_message.selfdecrypt].'
-                    );
-                  }}
-                  className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition flex items-center gap-1.5"
+                  onClick={() => setShowTokenInspector(!showTokenInspector)}
+                  className="px-3 py-2 rounded-lg text-xs font-semibold bg-indigo-950/80 hover:bg-indigo-900 text-indigo-300 border border-indigo-500/40 transition flex items-center gap-1.5"
                 >
-                  <KeyRound className="h-3.5 w-3.5" />
-                  Login with TideCloak
+                  <Activity className="h-3.5 w-3.5" />
+                  OIDC Token Inspector
                 </button>
-                <a
-                  href="http://localhost:8080/realms/blindvault-realm/account"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="px-2.5 py-2 rounded-lg text-[11px] font-medium bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-slate-700 transition"
-                  title="Open Live TideCloak Server on Port 8080"
+                <button
+                  onClick={handleOidcLogout}
+                  className="px-3 py-2 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-rose-300 border border-slate-700 transition flex items-center gap-1.5"
                 >
-                  8080 Console ↗
-                </a>
-              </div>
+                  <LogOut className="h-3.5 w-3.5" />
+                  Logout (/logout)
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={() => setShowLoginModal(true)}
+                className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition flex items-center gap-1.5"
+              >
+                <KeyRound className="h-3.5 w-3.5" />
+                Login with TideCloak (/token API)
+              </button>
             )}
 
             <button
@@ -340,6 +515,81 @@ export default function BlindVaultApp() {
           </div>
         </div>
       </header>
+
+      {/* Collapsible TideCloak OIDC Token & Introspection Drawer */}
+      {showTokenInspector && oidcSession && (
+        <div className="bg-slate-900/95 border-b border-indigo-500/40 px-6 py-4">
+          <div className="max-w-7xl mx-auto space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold uppercase tracking-wider text-indigo-300">
+                  TideCloak OpenID Connect API Console
+                </span>
+                <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-slate-950 text-emerald-300 border border-slate-800">
+                  {oidcSession.endpoint}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleIntrospectToken}
+                  className="px-3 py-1.5 rounded text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition"
+                >
+                  Validate Token (POST /token/introspect)
+                </button>
+                <button
+                  onClick={handleFetchUserInfo}
+                  className="px-3 py-1.5 rounded text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
+                >
+                  Get UserInfo (GET /userinfo)
+                </button>
+                <button
+                  onClick={handleRefreshToken}
+                  className="px-3 py-1.5 rounded text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
+                >
+                  Refresh Token (grant_type=refresh_token)
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs font-mono">
+              <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 space-y-1">
+                <p className="text-[10px] text-slate-400 uppercase font-sans font-bold">
+                  Access Token (Bearer)
+                </p>
+                <p className="text-indigo-300 break-all line-clamp-3">{oidcSession.access_token}</p>
+                <p className="text-[10px] text-slate-400 pt-1">
+                  expires_in: {oidcSession.expires_in}s | scope: {oidcSession.scope}
+                </p>
+              </div>
+
+              <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 space-y-1">
+                <p className="text-[10px] text-slate-400 uppercase font-sans font-bold">
+                  /userinfo Response
+                </p>
+                <pre className="text-[10px] text-emerald-300 overflow-x-auto">
+                  {JSON.stringify(oidcSession.userInfo || { status: 'Click Get UserInfo' }, null, 2)}
+                </pre>
+              </div>
+
+              <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 space-y-1">
+                <p className="text-[10px] text-slate-400 uppercase font-sans font-bold">
+                  /token/introspect Response
+                </p>
+                <pre className="text-[10px] text-amber-300 overflow-x-auto">
+                  {JSON.stringify(
+                    oidcSession.introspection || {
+                      hint: 'Click Validate Token to call /token/introspect',
+                    },
+                    null,
+                    2
+                  )}
+                </pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Main Content Grid */}
       <main className="max-w-7xl mx-auto w-full px-6 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1">
@@ -485,7 +735,8 @@ export default function BlindVaultApp() {
                           {selectedSub.unmaskedIdentity.fullName}
                         </p>
                         <p className="text-slate-300">
-                          ID: <span className="font-mono">{selectedSub.unmaskedIdentity.studentId}</span>
+                          ID:{' '}
+                          <span className="font-mono">{selectedSub.unmaskedIdentity.studentId}</span>
                         </p>
                         <p className="text-slate-400">{selectedSub.unmaskedIdentity.university}</p>
                         {averageScore && (
@@ -503,7 +754,8 @@ export default function BlindVaultApp() {
                           {selectedSub.encryptedIdentity}
                         </div>
                         <p className="text-[11px] text-slate-400">
-                          Sealed via <span className="text-indigo-300">{selectedSub.encryptionEngine}</span>
+                          Sealed via{' '}
+                          <span className="text-indigo-300">{selectedSub.encryptionEngine}</span>
                         </p>
                       </div>
                     )}
@@ -657,7 +909,9 @@ export default function BlindVaultApp() {
                       <p className="text-xs font-semibold text-emerald-300">
                         This judge has already cryptographically locked their evaluation.
                       </p>
-                      <p className="text-xs text-slate-400">&ldquo;{activeJudgeRecord.feedback}&rdquo;</p>
+                      <p className="text-xs text-slate-400">
+                        &ldquo;{activeJudgeRecord.feedback}&rdquo;
+                      </p>
                     </div>
                     <div className="text-right">
                       <span className="text-lg font-bold text-white">
@@ -717,7 +971,7 @@ export default function BlindVaultApp() {
                 <div className="flex items-center justify-between">
                   <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
                     <Terminal className="h-4 w-4 text-indigo-400" />
-                    TideCloak Emergent Authority Verification Log
+                    TideCloak Emergent Authority & OIDC API Log
                   </h3>
                   <span className="text-[11px] font-mono text-slate-400">
                     No Master Key Custody
@@ -758,7 +1012,118 @@ export default function BlindVaultApp() {
         </section>
       </main>
 
-      {/* Modal: Candidate Client-Side Encrypted Submission */}
+      {/* Modal 1: TideCloak REST Authentication API Login (/protocol/openid-connect/token) */}
+      {showLoginModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-indigo-500/40 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <KeyRound className="h-5 w-5 text-indigo-400" />
+                <div>
+                  <h3 className="text-base font-bold text-white">TideCloak Authentication API</h3>
+                  <p className="text-[11px] text-slate-400 font-mono">
+                    POST /auth/realms/blindvault-realm/protocol/openid-connect/token
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowLoginModal(false)}
+                className="text-xs text-slate-400 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handlePasswordGrantLogin} className="space-y-3.5 text-xs">
+              <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 space-y-1 text-[11px] text-slate-300">
+                <p className="font-semibold text-indigo-300">Pre-configured TideCloak Accounts:</p>
+                <div className="flex gap-2 pt-1">
+                  {[
+                    { u: 'judge3', label: 'judge3 (Dr. Linh Nguyen)' },
+                    { u: 'judge1', label: 'judge1 (Dr. Vance)' },
+                    { u: 'judge2', label: 'judge2 (Prof. Thorne)' },
+                  ].map((acc) => (
+                    <button
+                      type="button"
+                      key={acc.u}
+                      onClick={() => {
+                        setLoginUsername(acc.u);
+                        setLoginPassword('password');
+                      }}
+                      className={`px-2 py-1 rounded border text-[10px] font-mono transition ${
+                        loginUsername === acc.u
+                          ? 'bg-indigo-600/30 border-indigo-400 text-white'
+                          : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {acc.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-300 mb-1 font-medium">Username</label>
+                <div className="relative">
+                  <User className="h-4 w-4 text-slate-500 absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    required
+                    value={loginUsername}
+                    onChange={(e) => setLoginUsername(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-white font-mono"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-300 mb-1 font-medium">
+                  Password (default: <code>password</code>)
+                </label>
+                <input
+                  type="password"
+                  required
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-white font-mono"
+                />
+              </div>
+
+              <div className="p-2.5 rounded bg-slate-950 border border-slate-800 font-mono text-[10px] text-slate-400 space-y-0.5">
+                <div>grant_type=password</div>
+                <div>client_id=blindvault-client</div>
+                <div>client_secret=blindvault-secret-2026</div>
+              </div>
+
+              {authError && (
+                <div className="p-2.5 rounded bg-rose-950/50 border border-rose-500/40 text-rose-200 text-[11px]">
+                  {authError}
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowLoginModal(false)}
+                  className="px-4 py-2 rounded-lg bg-slate-800 text-slate-300"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={authLoading}
+                  className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold flex items-center gap-1.5"
+                >
+                  <KeyRound className="h-3.5 w-3.5" />
+                  {authLoading ? 'Requesting Token...' : 'Obtain Access Token (/token)'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal 2: Candidate Client-Side Encrypted Submission */}
       {showSubmitModal && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-2xl">
