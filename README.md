@@ -1,31 +1,179 @@
 [![Built with TideCloak](https://tide.org/badges/built-with-tidecloak.svg)](https://tide.org/tidecloak?utm_source=github&utm_medium=readme&utm_campaign=unlocked)
 
-## Project overview
+# BlindVault
 
-_One-sentence description of your project._
+**Blind review where nobody — not the admin, not the chair, not us — learns who a candidate is until every judge has locked their score.**
 
 Built with [TideCloak](https://tide.org/tidecloak?utm_source=github&utm_medium=readme&utm_campaign=unlocked).
 
-### 1. Vision & originality
+## Vision & originality
 
-<!-- What new product, service, experience or way of working are you proposing? What makes your idea distinctive? -->
+Three judges, forty portfolios, one scholarship. It's called "blind", yet anyone in IT can open the database and see whose work is whose. BlindVault makes blindness a property of the data, not a promise: identities are encrypted in the candidate's browser, scores are locked first, and names appear only when the whole panel has finished.
 
-### 2. Trust constraint insight
+## Trust constraint insight
 
-<!-- What is difficult, risky or impossible today because trust, privacy or security gets in the way? Explain what becomes possible when that constraint is removed. -->
+Blind review today means trusting whoever runs the system: DB admins, chairs, cloud operators. Any of them can unmask a candidate early, and nobody can prove they didn't. Remove that bottleneck and institutions can *prove* to applicants that nobody peeked.
 
-### 3. Value & impact
+## Value & impact
 
-<!-- Who would benefit, and how would their lives or work improve? Give a concrete example of why this matters. -->
+Students, grant applicants and job candidates are judged on their work, not their name or school. Committees get a publishable audit trail. Example: `#BV-8041` holds one locked score and no name; Huỳnh Gia Đạt appears only after two more judges sign in and lock theirs.
 
-### 4. Why TideCloak matters
+## Why TideCloak matters
 
-<!-- How does your application use TideCloak, and how does that integration help enable your idea? Connect the technology to the possibility you are demonstrating. -->
+- Judges sign in through TideCloak; tokens carry `_tide_message.selfencrypt` / `selfdecrypt` roles.
+- Identities are sealed with TideCloak tag-based E2EE (`doEncrypt`, tag `message`); our server stores ciphertext and holds no key.
+- With ordinary RBAC, whoever owns the server owns the key. With TideCloak, the key never sits on our server.
 
-### 5. Prototype & storytelling
+Honest limit: the 3-of-3 rule is still app-enforced; next it moves into TideCloak multi-party approval so no one can override it.
 
-<!-- What does your prototype demonstrate today? Describe the key interaction judges should look for. -->
+## Prototype & storytelling
+
+On `#BV-8041` (1/3), **Simulate Rogue Admin** gets only ciphertext. `judge2` signs in, locks, logs out (session revoked); `judge3` signs in and locks. Quorum turns green and **Unlock** reveals the candidate.
+
+<!-- Overview above: ≤ 300 words -->
+
+---
 
 ## Setup
 
-<!-- How to install and run the prototype. -->
+### Option 1 — Docker Compose (recommended)
+
+```bash
+docker compose up --build
+```
+
+| Service | URL | Credentials |
+|---|---|---|
+| BlindVault app | http://localhost:3000 | judge passphrases (below) |
+| TideCloak admin console | http://localhost:8080/auth | `admin` / `password` |
+
+TideCloak (`tideorg/tidecloak-dev`) auto-imports `tidecloak-init/blindvault-realm.json`: realm `blindvault-realm`, client `blindvault-client`, users `judge1`–`judge3`.
+
+### Option 2 — Next.js only
+
+```bash
+npm install --legacy-peer-deps   # required: React 19 vs @tidecloak/nextjs peer ranges
+npm run dev
+```
+
+Without a running TideCloak, the app switches to a clearly labelled fallback mode (see *What is real vs. simulated*).
+
+### Judge sign-in (secondary passphrase)
+
+Judges never type the realm password. Each judge has a **secondary passphrase** in `config/judge-credentials.json`:
+
+| Account | Judge | Default passphrase — change it |
+|---|---|---|
+| `judge1` | Dr. Evelyn Vance | `Vance#BV2026` |
+| `judge2` | Prof. Marcus Thorne | `Thorne#BV2026` |
+| `judge3` | Dr. Linh Nguyen | `Linh#BV2026` |
+
+Edit and save — the server re-reads the file on every login (Docker mounts it read-only, no rebuild). Once the passphrase matches, the server exchanges it for a TideCloak token using `tidecloakPassword`, which never reaches the browser.
+
+---
+
+## The story in four acts (demo script)
+
+| Time | Act | What you see |
+|---|---|---|
+| 0:00–0:25 | **The possibility** | A review queue showing only anonymous codes (`#BV-8041`, `#BV-8042`) — no names, no schools. |
+| 0:25–0:55 | **The constraint** | Sign in as `judge3`. Open the **OIDC Token Inspector** → **Validate Token** to show live TideCloak roles. Create a **+ New Blind Submission** to see identity sealed in the browser. |
+| 0:55–1:25 | **The attack** | On `#BV-8041` (1/3), click **Simulate Rogue Admin / DB Override**. Result: `ACCESS_DENIED_NO_MASTER_KEY` and a raw ciphertext dump. Sign in as `judge2` (`Thorne#BV2026`), lock a score → 2/3, still sealed. **Logout** shows the revoked-session receipt. |
+| 1:25–2:00 | **What changes** | **Sign in as another judge** → `judge3` (`Linh#BV2026`) → **Sign & Lock Final Score** → quorum 3/3 → **Unlock Identity** reveals Huỳnh Gia Đạt (`25120041`) and the average score. |
+
+The ↻ button in the header resets `#BV-8041` to 1/3 so the demo can be replayed.
+
+---
+
+## How it works
+
+```text
+Candidate browser
+  └─ sealCandidateIdentity() → TideCloak doEncrypt([{ data, tags: ['message'] }])
+        │  only ciphertext leaves the browser
+        ▼
+/api/submissions  (stores ciphertext + anonymous code + 3 judge slots, no key)
+        │
+        ├─ Judge signs in: passphrase → /api/tidecloak-auth → TideCloak /token
+        ├─ Judge locks score: LOCK_JUDGE_SCORE (score, feedback, signature hash)
+        │
+        ├─ Unlock at < 3/3  → ERR_EMERGENT_QUORUM_NOT_MET (ciphertext only)
+        └─ Unlock at   3/3  → unmaskCandidateIdentity() → TideCloak doDecrypt()
+```
+
+### Authentication API (`/api/tidecloak-auth`)
+
+A server-side proxy to `…/realms/blindvault-realm/protocol/openid-connect` that avoids browser CORS and tries both `/auth/realms` and `/realms` paths.
+
+| Action | TideCloak endpoint | Purpose |
+|---|---|---|
+| `TOKEN_PASSWORD` | `POST /token` | Verify secondary passphrase, then issue access + refresh token |
+| `TOKEN_REFRESH` | `POST /token` | Rotate tokens (rejected after logout) |
+| `TOKEN_INTROSPECT` | `POST /token/introspect` | Show `active`, `sub`, realm roles |
+| `USERINFO` | `GET /userinfo` | Verified judge profile |
+| `LOGOUT` | `POST /logout` | End session; old tokens then introspect as `active=false` |
+
+### Submissions API (`/api/submissions`)
+
+`GET` returns the queue. `POST` supports `CREATE_SUBMISSION`, `LOCK_JUDGE_SCORE` and `RESET_DEMO`.
+
+---
+
+## What is real vs. simulated
+
+We would rather be precise than impressive.
+
+| Capability | Status in this prototype |
+|---|---|
+| TideCloak realm, roles, OIDC login/introspect/userinfo/logout | **Real** when the TideCloak container is up |
+| Identity encryption with `doEncrypt` / `doDecrypt` | **Real** only with an activated Tide enclave session (browser sign-in) |
+| Fallback "Simulated Envelope" | **Placeholder, not encryption** — a reversible encoding used only so the UI works without an enclave. Labelled `TideCloak-Simulated-Envelope` in the app |
+| Server access checks | **Simulated TideCloak** — `lib/tideSim.ts` checks token, roles, slot ownership and quorum on every protected API call; token signature/DPoP not yet verified |
+| 3-of-3 quorum | Enforced server-side by `checkAccess('UNMASK_IDENTITY')`, not yet cryptographically |
+| Rogue Admin button | A scripted simulation of the attack, not a live exploit |
+| Logout revocation in fallback mode | Simulated with an in-memory revocation list |
+| Storage | In-memory; resets on restart |
+| Seed data | Synthetic — no real people |
+
+## Where TideCloak fits
+
+See **[docs/TIDECLOAK_INTEGRATION_PLAN.md](docs/TIDECLOAK_INTEGRATION_PLAN.md)** for the trust map, the 7 TideCloak touchpoints, the access policy and what each simulated piece is swapped for.
+
+| Action | Who TideCloak lets through |
+|---|---|
+| Lock a score | Signed-in `committee_judge`, own slot only |
+| Unmask identity | Judge with `_tide_message.selfdecrypt` **and** 3/3 scores locked |
+| Admin DB dump | Nobody gets plaintext — ciphertext only |
+
+Try it: while signed in as `judge3`, switch the grading slot to Dr. Vance and lock — the server answers `403 NOT_SLOT_OWNER`.
+
+## Roadmap
+
+1. **Live Tide enclave** — activate the realm's Tide license so every submission uses real threshold encryption.
+2. **Quorum inside TideCloak** — replace the app-level 3/3 check with a TideCloak multi-approval change request, so decrypt authority is granted only when all three judges approve.
+3. **Persistent zero-knowledge store** — PostgreSQL with a raw SQL dump view that proves no plaintext identity is stored.
+4. **Anti-anchoring** — encrypt each judge's notes so other judges can read them only after submitting their own score.
+
+## Project structure
+
+```text
+app/page.tsx                       Main UI: queue, grading console, token inspector, rogue admin
+app/api/tidecloak-auth/route.ts    OIDC proxy + passphrase check + logout revocation
+app/api/submissions/route.ts       In-memory ciphertext store and quorum state
+lib/tideBridge.ts                  doEncrypt/doDecrypt bridge with labelled fallback
+lib/tideSim.ts                     Simulated TideCloak access checks (policy table)
+docs/TIDECLOAK_INTEGRATION_PLAN.md Where TideCloak fits — trust map, touchpoints, swap plan
+config/judge-credentials.json      Judge secondary passphrases
+tidecloak-init/blindvault-realm.json  Auto-imported realm, client, roles, judges
+docker-compose.yml                 TideCloak (8080) + Next.js (3000)
+```
+
+## Troubleshooting (Windows / Docker Desktop)
+
+- **TideCloak restarts in a loop (`AccessDeniedException` on H2):** never mount a volume over `/opt/keycloak/data/h2`. Run `docker compose down -v` and start again.
+- **`ERESOLVE` on install:** use `npm install --legacy-peer-deps`.
+- **Login returns 503:** `config/judge-credentials.json` is missing or invalid JSON.
+
+## Security note
+
+All credentials in this repository (`client_secret`, admin and judge passwords, passphrases) are local demo values for synthetic data. Change them before any real use.
