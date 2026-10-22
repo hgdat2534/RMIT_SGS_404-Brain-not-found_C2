@@ -1,7 +1,13 @@
 import path from "path";
 import type { NextConfig } from "next";
 
+// NEXT_PUBLIC_TIDE_MODE=simulated (npm run dev:sim) swaps TideCloak, the enclave and the ORK network
+// for the stand-ins in src/lib/sim. It builds into its own folder so the two never share a cache.
+const SIMULATED = process.env.NEXT_PUBLIC_TIDE_MODE === "simulated";
+
 const nextConfig: NextConfig = {
+  distDir: SIMULATED ? ".next-sim" : ".next",
+
   // Next.js 16+ defaults to Turbopack. Use `next dev --webpack` (in package.json)
   // because @tidecloak/* packages need the webpack workarounds below.
   webpack: (config) => {
@@ -15,6 +21,10 @@ const nextConfig: NextConfig = {
         __dirname,
         "node_modules/@tidecloak/react/dist/esm/index.js"
       ),
+      // The Tide runtime the pages use. The real one imports data/tidecloak.json, so the simulated
+      // build must not resolve it at all.
+      "@tide-runtime$": path.resolve(__dirname, SIMULATED ? "src/lib/sim/runtime.tsx" : "src/lib/tide/runtime.tsx"),
+      "@tide-adapter$": path.resolve(__dirname, "data/tidecloak.json"),
     };
 
     return config;

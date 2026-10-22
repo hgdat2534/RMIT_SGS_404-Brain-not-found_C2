@@ -4,11 +4,12 @@ import { assessRisk } from "@/lib/domain/risk";
 import { contractReason, describeTideError, isNetworkRefusal } from "@/lib/tide/errors";
 
 describe("folder policies", () => {
-  it("needs an owner read-write and an agent read-only policy per folder", () => {
+  it("needs an owner read-write and an agent read-only policy per folder, plus household read on Bills", () => {
     const specs = requiredPolicies();
-    expect(specs).toHaveLength(6);
+    expect(specs).toHaveLength(7);
     expect(specs.filter((s) => s.subjectRole === "vault.owner").every((s) => s.access === "read-write")).toBe(true);
     expect(specs.filter((s) => s.subjectRole.startsWith("agent.")).every((s) => s.access === "read")).toBe(true);
+    expect(specs.filter((s) => s.subjectRole.startsWith("household.")).map((s) => [s.folderId, s.access])).toEqual([["bills", "read"]]);
   });
 
   it("rejects a policy that would let the agent write, or point at another record", () => {

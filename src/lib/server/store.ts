@@ -7,6 +7,7 @@
 import { randomUUID } from "crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
+import { TIDE_SIMULATED } from "@/lib/mode";
 import type { FolderId, PolicyAccess } from "@/lib/domain/folders";
 import type { ChangeKind, Requester, RequestTrigger, RiskAssessment } from "@/lib/domain/risk";
 
@@ -165,7 +166,8 @@ let _store: Store | null = null;
 
 export function getStore(): Store {
   if (!_store) {
-    const file = process.env.ERRAND_STORE_FILE || join(process.cwd(), "data", "store", "errand.json");
+    // Simulated ciphertext is under the simulated network's key, so it gets its own file.
+    const file = process.env.ERRAND_STORE_FILE || join(process.cwd(), "data", "store", TIDE_SIMULATED ? "errand-sim.json" : "errand.json");
     _store = new Store(file);
   }
   return _store;

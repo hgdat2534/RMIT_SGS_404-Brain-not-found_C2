@@ -7,6 +7,9 @@
 // approve/authorize/commit - by design, so a compromised server cannot widen the agent's access.
 
 import { loadTideConfig } from "@/lib/auth/tidecloakConfig";
+import { TIDE_SIMULATED } from "@/lib/mode";
+import { SimTidecloakAdmin } from "@/lib/sim/adminClient";
+import { getSimRealm } from "@/lib/sim/realm";
 
 export interface AdminClientOptions {
   baseUrl: string;
@@ -157,10 +160,14 @@ export class TidecloakAdmin {
   }
 }
 
-let _admin: TidecloakAdmin | null = null;
+/** What the server may do with its admin credential: look up, read, and file. Never approve. */
+export type AdminApi = Pick<TidecloakAdmin, "findUserId" | "getUserRealmRoles" | "proposeRealmRoleChange" | "getChangeRequest" | "listPendingChangeRequests">;
+
+let _admin: AdminApi | null = null;
 
 /** The server's admin client. The internal URL lets the app container reach TideCloak by service name. */
-export function getAdmin(): TidecloakAdmin {
+export function getAdmin(): AdminApi {
+  if (!_admin && TIDE_SIMULATED) _admin = new SimTidecloakAdmin(getSimRealm());
   if (!_admin) {
     const config = loadTideConfig();
     const password = process.env.KC_BOOTSTRAP_ADMIN_PASSWORD;

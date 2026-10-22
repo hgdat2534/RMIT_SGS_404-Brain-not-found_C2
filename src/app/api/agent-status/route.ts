@@ -6,7 +6,7 @@ import { callerOf, forbidden } from "@/lib/server/caller";
 // (What the agent can actually decrypt is decided by the network from its own token.)
 export const GET = withAuth(async (_req, jwt) => {
   const caller = callerOf(jwt);
-  if (!caller.isOwner && !caller.isAgent) return forbidden();
+  if (!caller.isOwner && !caller.isAgent && !caller.isAuditor) return forbidden("Only the owner, the auditor and the agent can see what the agent may open");
   try {
     return Response.json(await agentFolderAccess());
   } catch (err) {

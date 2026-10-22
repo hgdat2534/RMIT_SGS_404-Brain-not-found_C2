@@ -7,7 +7,7 @@
 //   2. the owner signs requestModel in the Tide enclave pop-up
 //   3. POST the same endpoint { requestModel: <signed, base64> } -> mode "recorded"; commits at quorum
 
-import { fromBase64, toBase64 } from "./vaultPolicies";
+import { fromBase64, toBase64 } from "@/lib/encoding";
 
 export type SecureFetch = (url: string, init?: RequestInit) => Promise<Response>;
 export type ApproveTideRequests = (

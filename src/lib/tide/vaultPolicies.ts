@@ -9,6 +9,7 @@ import { Models } from "@tideorg/js";
 import { PolicySignRequest } from "heimdall-tide";
 import { buildRelationshipPolicy } from "./relationship";
 import type { PolicySpec } from "@/lib/domain/folders";
+import { fromBase64, toBase64 } from "@/lib/encoding";
 
 const SIGN_REQUEST_EXPIRY_SECONDS = 604800;
 
@@ -26,12 +27,7 @@ function tc(): TideClient {
   return client;
 }
 
-export const toBase64 = (b: Uint8Array) => {
-  let bin = "";
-  for (let i = 0; i < b.length; i++) bin += String.fromCharCode(b[i]);
-  return btoa(bin);
-};
-export const fromBase64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+export { toBase64, fromBase64 };
 
 export interface SignedPolicy extends PolicySpec {
   policyB64: string;

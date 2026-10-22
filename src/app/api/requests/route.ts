@@ -6,18 +6,19 @@ import { badRequest, callerOf, forbidden, readJson } from "@/lib/server/caller";
 
 const AGENT_TASK_SCOPE: FolderId[] = ["bills"];
 
-// GET /api/requests - owner sees every request; the agent sees its own.
+// GET /api/requests - the owner and the auditor see every request; the agent sees its own.
 export const GET = withAuth(async (_req, jwt) => {
   const caller = callerOf(jwt);
-  if (!caller.isOwner && !caller.isAgent) return forbidden();
+  if (!caller.isOwner && !caller.isAgent && !caller.isAuditor) return forbidden("Only the owner, the auditor and the agent can see access requests");
   const requests = await syncRequests();
-  const visible = caller.isOwner ? requests : requests.filter((r) => r.requestedBy === "agent");
+  const visible = caller.isOwner || caller.isAuditor ? requests : requests.filter((r) => r.requestedBy === "agent");
   return Response.json({ requests: [...visible].reverse() });
 });
 
 // POST /api/requests
 //   owner: { kind: "grant" | "revoke", folderId }
 //   agent: { folderId, reason, trigger? }  (the agent can only ask for MORE; it cannot revoke or approve)
+//   support: { folderId }                   (the platform's own staff: filed as "operator", flagged red)
 // Either way the result is a pending TideCloak change request that only the owner can sign.
 export const POST = withAuth(async (req, jwt) => {
   const caller = callerOf(jwt);
@@ -54,6 +55,17 @@ export const POST = withAuth(async (req, jwt) => {
         reason,
         trigger,
         taskScope: AGENT_TASK_SCOPE,
+      });
+      return Response.json({ request }, { status: 201 });
+    }
+
+    if (caller.isSupport) {
+      const request = await fileAccessChange({
+        kind: "grant",
+        folderId,
+        requestedBy: "operator",
+        requesterName: caller.name,
+        reason: `Support engineer ${caller.name} asks to give the agent ${folderId} access (e.g. "to debug a customer ticket").`,
       });
       return Response.json({ request }, { status: 201 });
     }

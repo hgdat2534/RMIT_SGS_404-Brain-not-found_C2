@@ -1,5 +1,6 @@
 node_modules/
 .next/
+.next-sim/
 out/
 build/
 
@@ -15,6 +16,7 @@ data/keycloakdb*
 
 # Errand runtime state (ciphertext store, invite links)
 data/store/
+data/sim/
 data/invite-links.txt
 data/.placeholder
 branding/

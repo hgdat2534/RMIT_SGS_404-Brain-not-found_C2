@@ -1,5 +1,7 @@
 import { readFileSync } from "fs";
 import { join } from "path";
+import { TIDE_SIMULATED } from "@/lib/mode";
+import { getSimRealm } from "@/lib/sim/realm";
 
 export interface TidecloakConfig {
   realm: string;
@@ -14,6 +16,9 @@ export interface TidecloakConfig {
 }
 
 export function loadTideConfig(): TidecloakConfig {
+  // Simulated mode: the simulated realm's adapter JSON, with its own EdDSA signing key.
+  if (TIDE_SIMULATED) return getSimRealm().adapterConfig();
+
   if (process.env.CLIENT_ADAPTER) {
     return JSON.parse(process.env.CLIENT_ADAPTER);
   }

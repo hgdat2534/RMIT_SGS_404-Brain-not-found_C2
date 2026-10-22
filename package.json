@@ -6,6 +6,9 @@
     "dev": "next dev --webpack",
     "build": "next build --webpack",
     "start": "next start",
+    "dev:sim": "node scripts/run-sim.cjs dev --webpack",
+    "build:sim": "node scripts/run-sim.cjs build --webpack",
+    "start:sim": "node scripts/run-sim.cjs start",
     "init": "node scripts/run-init.cjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config ./vitest.config.ts"

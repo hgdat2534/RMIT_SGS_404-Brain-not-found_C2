@@ -3,13 +3,13 @@
 // Browser-side plumbing shared by the owner page and the agent console.
 // Every call to our API goes through the SDK's secureFetch with an ABSOLUTE url (the DPoP proof
 // signs origin + path; a relative url throws "Failed to construct 'URL'").
+// Works the same against real or simulated TideCloak (`@tide-runtime`).
 
-import { useTideCloak } from "@tidecloak/nextjs";
-import { IAMService } from "@tidecloak/js";
+import { useTide } from "@tide-runtime";
 import { useCallback, useMemo } from "react";
 import { getFolder, type FolderId, type PolicySpec } from "@/lib/domain/folders";
+import { fromBase64 } from "@/lib/encoding";
 import type { IgaContext } from "@/lib/tide/approvals";
-import { fromBase64 } from "@/lib/tide/vaultPolicies";
 import type { PlainDocument } from "@/lib/seed/documents";
 
 export interface FolderPayload {
@@ -23,7 +23,7 @@ export interface DecryptedDocument extends PlainDocument {
 }
 
 export function useErrand() {
-  const tide = useTideCloak();
+  const { session: tide, ops } = useTide();
   const { secureFetch, getToken, getConfig } = tide;
 
   const api = useCallback(
@@ -63,17 +63,16 @@ export function useErrand() {
       if (!policy) throw new Error(`No signed policy for ${subjectRole} on ${folderId}. The owner must run "Set up vault" first.`);
       if (!payload.documents.length) return [];
       const recordId = getFolder(folderId).recordId;
-      const out = await IAMService.doDecrypt(
+      const out = await ops.decrypt(
         payload.documents.map((d) => ({ encrypted: d.ciphertext, tags: [recordId] })),
         fromBase64(policy.policyB64),
       );
-      return out.map((plain, i) => {
-        const text = typeof plain === "string" ? plain : new TextDecoder().decode(plain);
+      return out.map((text, i) => {
         const parsed = JSON.parse(text) as PlainDocument;
         return { id: payload.documents[i].id, title: parsed.title, body: parsed.body };
       });
     },
-    [api],
+    [api, ops],
   );
 
   const audit = useCallback(
@@ -82,5 +81,5 @@ export function useErrand() {
     [api],
   );
 
-  return { tide, api, iga, decryptFolder, audit, vendorId: config.vendorId ?? "" };
+  return { tide, ops, api, iga, decryptFolder, audit, vendorId: config.vendorId ?? "" };
 }
