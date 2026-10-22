@@ -2,13 +2,17 @@ services:
   tidecloak:
     image: tideorg/tidecloak-dev:latest
     container_name: mytidecloak
+    user: "1000:1000"
     ports:
       - "8080:8080"
     environment:
       - KC_BOOTSTRAP_ADMIN_USERNAME=admin
       - KC_BOOTSTRAP_ADMIN_PASSWORD=password
+      - KC_HTTP_ENABLED=true
+      - KC_HOSTNAME_STRICT=false
+    command: ["start-dev", "--import-realm"]
     volumes:
-      - tidecloak_data:/opt/keycloak/data/h2
+      - ./tidecloak-init/blindvault-realm.json:/opt/keycloak/data/import/blindvault-realm.json:ro
     restart: unless-stopped
 
   blindvault-web:
@@ -23,6 +27,3 @@ services:
     depends_on:
       - tidecloak
     restart: unless-stopped
-
-volumes:
-  tidecloak_data:

@@ -1,0 +1,77 @@
+{
+  "id": "blindvault-realm",
+  "realm": "blindvault-realm",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": false,
+  "roles": {
+    "realm": [
+      {
+        "name": "_tide_message.selfencrypt",
+        "description": "TideCloak tag role to encrypt candidate identity payloads"
+      },
+      {
+        "name": "_tide_message.selfdecrypt",
+        "description": "TideCloak tag role to decrypt candidate identity payloads once quorum aligns"
+      },
+      {
+        "name": "committee_judge",
+        "description": "BlindVault Quorum Judge"
+      }
+    ]
+  },
+  "defaultRoles": [
+    "_tide_message.selfencrypt",
+    "_tide_message.selfdecrypt",
+    "committee_judge"
+  ],
+  "clients": [
+    {
+      "clientId": "blindvault-client",
+      "name": "BlindVault Next.js App",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": [
+        "http://localhost:3000/*",
+        "http://localhost:3000/auth/redirect"
+      ],
+      "webOrigins": [
+        "http://localhost:3000",
+        "*"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "judge",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Linh",
+      "lastName": "Nguyen (Quorum Judge)",
+      "email": "judge@blindvault.org",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "password",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "_tide_message.selfencrypt",
+        "_tide_message.selfdecrypt",
+        "committee_judge"
+      ]
+    }
+  ]
+}

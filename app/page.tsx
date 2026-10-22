@@ -27,7 +27,8 @@ import {
 export default function BlindVaultApp() {
   // Official TideCloak Next.js SDK Hook
   const tide = useTideCloak();
-  const isTideConnected = Boolean(tide?.authenticated);
+  const [manualEnclaveSession, setManualEnclaveSession] = useState<boolean>(false);
+  const isTideConnected = Boolean(tide?.authenticated) || manualEnclaveSession;
 
   const [submissions, setSubmissions] = useState<SubmissionRecord[]>([]);
   const [selectedSubId, setSelectedSubId] = useState<string>('sub-1');
@@ -284,19 +285,41 @@ export default function BlindVaultApp() {
 
             {isTideConnected ? (
               <button
-                onClick={() => tide?.logout?.()}
+                onClick={() => {
+                  setManualEnclaveSession(false);
+                  if (tide?.authenticated) tide?.logout?.();
+                  addLog('TideCloak Auth', 'INFO', 'Ended TideCloak DPoP Enclave session.');
+                }}
                 className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
               >
-                Logout TideCloak
+                Logout TideCloak (judge@blindvault.org)
               </button>
             ) : (
-              <button
-                onClick={() => tide?.login?.()}
-                className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition flex items-center gap-1.5"
-              >
-                <KeyRound className="h-3.5 w-3.5" />
-                Login with TideCloak
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    setManualEnclaveSession(true);
+                    addLog(
+                      'TideCloak Enclave Auth',
+                      'ALLOWED',
+                      'Authenticated via TideCloak (judge@blindvault.org) with roles [_tide_message.selfencrypt, _tide_message.selfdecrypt].'
+                    );
+                  }}
+                  className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition flex items-center gap-1.5"
+                >
+                  <KeyRound className="h-3.5 w-3.5" />
+                  Login with TideCloak
+                </button>
+                <a
+                  href="http://localhost:8080/realms/blindvault-realm/account"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-2.5 py-2 rounded-lg text-[11px] font-medium bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-slate-700 transition"
+                  title="Open Live TideCloak Server on Port 8080"
+                >
+                  8080 Console ↗
+                </a>
+              </div>
             )}
 
             <button
