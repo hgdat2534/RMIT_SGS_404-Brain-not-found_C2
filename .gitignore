@@ -1,0 +1,22 @@
+node_modules/
+.next/
+out/
+build/
+
+# Secrets — operator credentials NEVER belong in the repo (AP-41).
+.env
+.env.local
+.env.*.local
+
+# Local TideCloak state (adapter export + H2 volume)
+data/tidecloak.json
+data/keycloakdb*
+.tide-pack/
+
+# Errand runtime state (ciphertext store, invite links)
+data/store/
+data/invite-links.txt
+data/.placeholder
+branding/
+*.tsbuildinfo
+next-env.d.ts

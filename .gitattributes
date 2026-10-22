@@ -1,0 +1,3 @@
+public/tide_dpop_auth.html binary
+*.sh text eol=lf
+scripts/*.template text eol=lf

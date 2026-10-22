@@ -1,0 +1,8 @@
+node_modules
+.next
+.git
+.tide-pack
+.env
+data/store
+data/invite-links.txt
+*.mp4

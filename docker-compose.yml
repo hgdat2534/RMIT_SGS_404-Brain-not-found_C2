@@ -1,0 +1,42 @@
+name: errand
+
+# tidecloak: started (and reset) by `npm run init`, which also bootstraps the realm.
+# app:       build it AFTER init - the browser bundle embeds data/tidecloak.json.
+#            docker compose up -d --build app
+
+services:
+  tidecloak:
+    image: ${TIDECLOAK_IMAGE:-tideorg/tidecloak-dev:latest}
+    container_name: tidecloak
+    ports:
+      - "8080:8080"
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:?set KC_BOOTSTRAP_ADMIN_PASSWORD in .env}
+    volumes:
+      # Mount the image's own data dir (not .../data/h2): a fresh named volume then inherits the
+      # keycloak user's ownership. Mounted at h2, the volume is root-owned and H2 cannot open its DB.
+      - tidecloak-data:/opt/keycloak/data
+    restart: unless-stopped
+
+  app:
+    build: .
+    container_name: errand-app
+    depends_on:
+      - tidecloak
+    ports:
+      - "3000:3000"
+    environment:
+      # The browser reaches TideCloak at localhost:8080 (from data/tidecloak.json); the app's
+      # server reaches it by service name to FILE change requests. It can never approve them.
+      TIDECLOAK_INTERNAL_URL: http://tidecloak:8080
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:?set KC_BOOTSTRAP_ADMIN_PASSWORD in .env}
+      ERRAND_STORE_FILE: /app/store/errand.json
+    volumes:
+      - errand-store:/app/store
+    restart: unless-stopped
+
+volumes:
+  tidecloak-data:
+  errand-store:
