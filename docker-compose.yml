@@ -1,0 +1,30 @@
+version: '3.9'
+
+services:
+  tidecloak:
+    image: tideorg/tidecloak-dev:latest
+    container_name: mytidecloak
+    ports:
+      - "8080:8080"
+    environment:
+      - KC_BOOTSTRAP_ADMIN_USERNAME=admin
+      - KC_BOOTSTRAP_ADMIN_PASSWORD=password
+    volumes:
+      - tidecloak_data:/opt/keycloak/data/h2
+    restart: unless-stopped
+
+  blindvault-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: blindvault-web
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_TIDECLOAK_URL=http://localhost:8080
+    depends_on:
+      - tidecloak
+    restart: unless-stopped
+
+volumes:
+  tidecloak_data:
