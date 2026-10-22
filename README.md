@@ -4,7 +4,13 @@
 
 **Blind review where nobody — not the admin, not the chair, not us — learns who a candidate is until every judge has locked their score.**
 
-Built with [TideCloak](https://tide.org/tidecloak?utm_source=github&utm_medium=readme&utm_campaign=unlocked).
+![Next.js](https://img.shields.io/badge/Next.js-15-black?logo=next.js)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6?logo=typescript&logoColor=white)
+![TideCloak](https://img.shields.io/badge/Auth-TideCloak-0a7cff)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ed?logo=docker&logoColor=white)
+![Status](https://img.shields.io/badge/status-hackathon%20prototype-orange)
+
+Built with [TideCloak](https://tide.org/tidecloak?utm_source=github&utm_medium=readme&utm_campaign=unlocked) for the **RMIT × Tide "UNLOCKED" Hackathon 2026** (Industry Challenge) — team *404 Brain Not Found*.
 
 ## Vision & originality
 
@@ -34,18 +40,36 @@ On `#BV-8041` (1/3), **Simulate Rogue Admin** gets only ciphertext. `judge2` sig
 
 ---
 
+## Table of contents
+
+- [Setup](#setup)
+- [Alignment with the challenge brief](#alignment-with-the-challenge-brief)
+- [Demo script](#demo-script-2-minutes)
+- [Architecture](#architecture)
+- [What is real vs. simulated](#what-is-real-vs-simulated)
+- [Roadmap](#roadmap)
+- [Project structure](#project-structure)
+- [Troubleshooting](#troubleshooting)
+- [Security note](#security-note)
+
+---
+
 ## Setup
+
+**Requirements:** Docker Desktop (recommended) *or* Node.js 20+.
 
 ### Option 1 — Docker Compose (recommended)
 
 ```bash
+git clone <this-repo-url>
+cd RMIT_SGS_404-Brain-not-found_C2
 docker compose up --build
 ```
 
 | Service | URL | Credentials |
 |---|---|---|
 | BlindVault app | http://localhost:3000 | judge passphrases (below) |
-| TideCloak admin console | http://localhost:8080/auth | `admin` / `password` |
+| TideCloak admin console | http://localhost:8080/auth | `admin` / `password` (local demo only) |
 
 TideCloak (`tideorg/tidecloak-dev`) auto-imports `tidecloak-init/blindvault-realm.json`: realm `blindvault-realm`, client `blindvault-client`, users `judge1`–`judge3`.
 
@@ -56,7 +80,7 @@ npm install --legacy-peer-deps   # required: React 19 vs @tidecloak/nextjs peer 
 npm run dev
 ```
 
-Without a running TideCloak, the app switches to a clearly labelled fallback mode (see *What is real vs. simulated*).
+Without a running TideCloak, the app switches to a clearly labelled fallback mode (see [What is real vs. simulated](#what-is-real-vs-simulated)).
 
 ### Judge sign-in (secondary passphrase)
 
@@ -72,7 +96,31 @@ Edit and save — the server re-reads the file on every login (Docker mounts it 
 
 ---
 
-## The story in four acts (demo script)
+## Alignment with the challenge brief
+
+The brief (`context/`) asks for a working prototype with TideCloak integrated that shows **one new possibility**, where **no single administrator, organisation or AI can unilaterally override the rules**. Its golden rule: *"If your app would work exactly the same with ordinary login and backend permissions, develop the idea further."*
+
+| Brief requirement | How BlindVault answers it |
+|---|---|
+| Pick a possibility held back by a trust trade-off | Fair, blind evaluation (the *Blind Portfolio Review* idea) is held back because the platform operator can always see identities. |
+| No single party can override the rules | The server stores only ciphertext and never holds a decryption key; unmasking needs the judge's own Tide identity **and** a full 3/3 quorum. |
+| TideCloak must change what the app can credibly do | With plain RBAC + a DB, an admin can read the identity column at any time. With TideCloak E2EE, the *operator cannot*, which is what makes a publishable "nobody peeked" claim credible. |
+| Use synthetic data / mocks | All candidates, judges and scores are synthetic. |
+| Focus on one convincing demonstration | One flow: seal → lock scores → quorum → unmask, plus a Rogue Admin attack. |
+
+### Judging criteria map
+
+| Criterion (weight) | Where to look |
+|---|---|
+| Vision & originality (25%) | Blindness as a *property of the data*, not a policy promise |
+| Trust constraint insight (20%) | Rogue Admin button returns `ACCESS_DENIED_NO_MASTER_KEY` + raw ciphertext |
+| Value & impact (20%) | Scholarships, grants, hiring: verifiable fairness plus an audit trail |
+| Why TideCloak matters (20%) | `lib/tideBridge.ts` (`doEncrypt`/`doDecrypt`), [integration plan](docs/TIDECLOAK_INTEGRATION_PLAN.md) |
+| Prototype & storytelling (15%) | The four-act demo below |
+
+---
+
+## Demo script (2 minutes)
 
 | Time | Act | What you see |
 |---|---|---|
@@ -85,7 +133,7 @@ The ↻ button in the header resets `#BV-8041` to 1/3 so the demo can be replaye
 
 ---
 
-## How it works
+## Architecture
 
 ```text
 Candidate browser
@@ -101,9 +149,19 @@ Candidate browser
         └─ Unlock at   3/3  → unmaskCandidateIdentity() → TideCloak doDecrypt()
 ```
 
-### Authentication API (`/api/tidecloak-auth`)
+### Access policy
 
-A server-side proxy to `…/realms/blindvault-realm/protocol/openid-connect` that avoids browser CORS and tries both `/auth/realms` and `/realms` paths.
+| Action | Who TideCloak lets through |
+|---|---|
+| Lock a score | Signed-in `committee_judge`, own slot only |
+| Unmask identity | Judge with `_tide_message.selfdecrypt` **and** 3/3 scores locked |
+| Admin DB dump | Nobody gets plaintext — ciphertext only |
+
+Try it: while signed in as `judge3`, switch the grading slot to Dr. Vance and lock — the server answers `403 NOT_SLOT_OWNER`.
+
+### API reference
+
+**`/api/tidecloak-auth`** — server-side proxy to `…/realms/blindvault-realm/protocol/openid-connect` (avoids browser CORS; tries both `/auth/realms` and `/realms`).
 
 | Action | TideCloak endpoint | Purpose |
 |---|---|---|
@@ -113,9 +171,9 @@ A server-side proxy to `…/realms/blindvault-realm/protocol/openid-connect` tha
 | `USERINFO` | `GET /userinfo` | Verified judge profile |
 | `LOGOUT` | `POST /logout` | End session; old tokens then introspect as `active=false` |
 
-### Submissions API (`/api/submissions`)
+**`/api/submissions`** — `GET` returns the queue; `POST` supports `CREATE_SUBMISSION`, `LOCK_JUDGE_SCORE` and `RESET_DEMO`.
 
-`GET` returns the queue. `POST` supports `CREATE_SUBMISSION`, `LOCK_JUDGE_SCORE` and `RESET_DEMO`.
+See **[docs/TIDECLOAK_INTEGRATION_PLAN.md](docs/TIDECLOAK_INTEGRATION_PLAN.md)** for the trust map, the 7 TideCloak touchpoints and what each simulated piece is swapped for.
 
 ---
 
@@ -135,17 +193,7 @@ We would rather be precise than impressive.
 | Storage | In-memory; resets on restart |
 | Seed data | Synthetic — no real people |
 
-## Where TideCloak fits
-
-See **[docs/TIDECLOAK_INTEGRATION_PLAN.md](docs/TIDECLOAK_INTEGRATION_PLAN.md)** for the trust map, the 7 TideCloak touchpoints, the access policy and what each simulated piece is swapped for.
-
-| Action | Who TideCloak lets through |
-|---|---|
-| Lock a score | Signed-in `committee_judge`, own slot only |
-| Unmask identity | Judge with `_tide_message.selfdecrypt` **and** 3/3 scores locked |
-| Admin DB dump | Nobody gets plaintext — ciphertext only |
-
-Try it: while signed in as `judge3`, switch the grading slot to Dr. Vance and lock — the server answers `403 NOT_SLOT_OWNER`.
+---
 
 ## Roadmap
 
@@ -154,21 +202,28 @@ Try it: while signed in as `judge3`, switch the grading slot to Dr. Vance and lo
 3. **Persistent zero-knowledge store** — PostgreSQL with a raw SQL dump view that proves no plaintext identity is stored.
 4. **Anti-anchoring** — encrypt each judge's notes so other judges can read them only after submitting their own score.
 
+---
+
 ## Project structure
 
 ```text
-app/page.tsx                       Main UI: queue, grading console, token inspector, rogue admin
-app/api/tidecloak-auth/route.ts    OIDC proxy + passphrase check + logout revocation
-app/api/submissions/route.ts       In-memory ciphertext store and quorum state
-lib/tideBridge.ts                  doEncrypt/doDecrypt bridge with labelled fallback
-lib/tideSim.ts                     Simulated TideCloak access checks (policy table)
-docs/TIDECLOAK_INTEGRATION_PLAN.md Where TideCloak fits — trust map, touchpoints, swap plan
-config/judge-credentials.json      Judge secondary passphrases
+app/page.tsx                          Main UI: queue, grading console, token inspector, rogue admin
+app/api/tidecloak-auth/route.ts       OIDC proxy + passphrase check + logout revocation
+app/api/submissions/route.ts          In-memory ciphertext store and quorum state
+components/TideClientWrapper.tsx      TideCloak provider wrapper
+lib/tideBridge.ts                     doEncrypt/doDecrypt bridge with labelled fallback
+lib/tideSim.ts                        Simulated TideCloak access checks (policy table)
+config/judge-credentials.json         Judge secondary passphrases
 tidecloak-init/blindvault-realm.json  Auto-imported realm, client, roles, judges
-docker-compose.yml                 TideCloak (8080) + Next.js (3000)
+docs/TIDECLOAK_INTEGRATION_PLAN.md    Trust map, touchpoints, swap plan
+docker-compose.yml                    TideCloak (8080) + Next.js (3000)
 ```
 
-## Troubleshooting (Windows / Docker Desktop)
+**Tech stack:** Next.js 15 (App Router), React 19, TypeScript, Tailwind CSS, `@tidecloak/nextjs`, TideCloak (`tideorg/tidecloak-dev`), Docker Compose.
+
+---
+
+## Troubleshooting
 
 - **TideCloak restarts in a loop (`AccessDeniedException` on H2):** never mount a volume over `/opt/keycloak/data/h2`. Run `docker compose down -v` and start again.
 - **`ERESOLVE` on install:** use `npm install --legacy-peer-deps`.
@@ -176,4 +231,4 @@ docker-compose.yml                 TideCloak (8080) + Next.js (3000)
 
 ## Security note
 
-All credentials in this repository (`client_secret`, admin and judge passwords, passphrases) are local demo values for synthetic data. Change them before any real use.
+All credentials in this repository (`client_secret`, admin and judge passwords, passphrases) are local demo values for synthetic data. Change them before any real use. Real secrets belong in an untracked `.env`.
